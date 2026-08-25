@@ -1,0 +1,83 @@
+name: Build and publish Windows release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Build Windows application
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --windowed --onedir --name MapleStoryExpTool --icon icon.ico --add-data "resources;resources" main.py
+
+          $app = "dist\MapleStoryExpTool"
+          Remove-Item -LiteralPath "$app\_internal\cv2\opencv_videoio_ffmpeg500_64.dll" -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath "$app\_internal\PySide6\opengl32sw.dll" -ErrorAction SilentlyContinue
+
+          $rootOpenBlas = "$app\_internal\libscipy_openblas64_-327b2e0bcffce2882e0dc04cdeb4eaa6.dll"
+          $numpyOpenBlas = "$app\_internal\numpy.libs\libscipy_openblas64_-327b2e0bcffce2882e0dc04cdeb4eaa6.dll"
+          if ((Test-Path -LiteralPath $rootOpenBlas) -and (Test-Path -LiteralPath $numpyOpenBlas)) {
+            if ((Get-FileHash -LiteralPath $rootOpenBlas).Hash -eq (Get-FileHash -LiteralPath $numpyOpenBlas).Hash) {
+              Remove-Item -LiteralPath $rootOpenBlas
+            }
+          }
+
+          @"
+          MapleStoryExpTool v1.1.0
+
+          使用方式：
+          1. 完整解壓縮此 ZIP。
+          2. 雙擊 MapleStoryExpTool.exe。
+          3. HP 藥水放在 Del，MP 藥水放在 Ins。
+          4. 開啟背包後即可讀取楓幣；背包可放在遊戲視窗內任意位置。
+
+          Windows SmartScreen 可能因程式沒有付費數位簽章而顯示提示。
+          "@ | Set-Content -LiteralPath "$app\README.txt" -Encoding utf8
+
+          Compress-Archive -LiteralPath $app -DestinationPath "MapleStoryExpTool-1.1.0-Windows-EXE.zip" -CompressionLevel Optimal
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          @"
+          ## Windows 版下載方式
+
+          請從 Assets 下載 `MapleStoryExpTool-1.1.0-Windows-EXE.zip`。完整解壓縮後，雙擊 `MapleStoryExpTool.exe`。
+
+          ## 功能
+
+          - 經驗值效率與升等時間估算
+          - 楓幣收入統計
+          - HP／MP 藥水消耗統計
+          - 自訂藥水單價與淨收益計算
+
+          ## 注意事項
+
+          - HP 藥水需放在 `Del`
+          - MP 藥水需放在 `Ins`
+          - 背包開啟時才能讀取楓幣，背包位置可移動
+          - 程式未購買數位簽章，Windows 可能顯示 SmartScreen 提示
+          "@ | Set-Content -LiteralPath "release-notes.md" -Encoding utf8
+
+          gh release create v1.1.0 "MapleStoryExpTool-1.1.0-Windows-EXE.zip" --target main --title "MapleStoryExpTool v1.1.0" --notes-file "release-notes.md"
