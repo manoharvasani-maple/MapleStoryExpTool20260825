@@ -2,12 +2,18 @@ name: Build and publish Windows release
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/release.yml"
 
 permissions:
   contents: write
 
 jobs:
   release:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release v1.1.6]')
     runs-on: windows-latest
     steps:
       - name: Check out source
@@ -47,7 +53,7 @@ jobs:
           }
 
           @"
-          MapleStoryExpTool v1.1.5
+          MapleStoryExpTool v1.1.6
 
           使用方式：
           1. 完整解壓縮此 ZIP。
@@ -70,7 +76,7 @@ jobs:
           Windows SmartScreen 可能因程式沒有付費數位簽章而顯示提示。
           "@ | Set-Content -LiteralPath "$app\README.txt" -Encoding utf8
 
-          Compress-Archive -LiteralPath $app -DestinationPath "MapleStoryExpTool-1.1.5-Windows-EXE.zip" -CompressionLevel Optimal
+          Compress-Archive -LiteralPath $app -DestinationPath "MapleStoryExpTool-1.1.6-Windows-EXE.zip" -CompressionLevel Optimal
 
       - name: Publish GitHub release
         shell: pwsh
@@ -80,7 +86,18 @@ jobs:
           @"
           ## Windows 版下載方式
 
-          請從 Assets 下載 `MapleStoryExpTool-1.1.5-Windows-EXE.zip`。完整解壓縮後，雙擊 `MapleStoryExpTool.exe`。
+          請從 Assets 下載 `MapleStoryExpTool-1.1.6-Windows-EXE.zip`。完整解壓縮後，雙擊 `MapleStoryExpTool.exe`。
+
+          此版本為公開測試版，主要用來收集不同電腦與遊戲畫面下的 HP／MP
+          快捷欄辨識結果。若遇到問題，請一併提供 `%APPDATA%\ExpTracker\error.log`。
+
+          ## 1.1.6 修正
+
+          - 白水改用多個文字裁切範圍交叉辨識，避免固定裁切漏掉數字筆畫
+          - OCR 候選平票且畫面已變化時，不再永遠保留舊數字
+          - 支援 `1000 → 999` 等正常位數變化
+          - 按下重置時同步清除楓幣與 HP／MP OCR 快取
+          - 錯誤日誌新增藥水基準、接受變化及拒絕跳動紀錄
 
           ## 1.1.5 修正
 
@@ -114,5 +131,5 @@ jobs:
           - 程式未購買數位簽章，Windows 可能顯示 SmartScreen 提示
           "@ | Set-Content -LiteralPath "release-notes.md" -Encoding utf8
 
-          gh release create v1.1.5 "MapleStoryExpTool-1.1.5-Windows-EXE.zip" --target main --title "MapleStoryExpTool v1.1.5" --notes-file "release-notes.md"
+          gh release create v1.1.6 "MapleStoryExpTool-1.1.6-Windows-EXE.zip" --target main --prerelease --title "MapleStoryExpTool v1.1.6 測試版" --notes-file "release-notes.md"
 
