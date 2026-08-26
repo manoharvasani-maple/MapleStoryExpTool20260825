@@ -856,4 +856,3 @@ class PPOCRv6TinyTextRecognition:
         text, confidence = self.decode(pred)
 
         return text, confidence
-

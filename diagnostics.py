@@ -113,4 +113,3 @@ def _install_exception_hooks() -> None:
 
         thread_hook._exp_tracker_hook = True
         threading.excepthook = thread_hook
-

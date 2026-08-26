@@ -47,7 +47,7 @@ jobs:
           }
 
           @"
-          MapleStoryExpTool v1.1.7
+          MapleStoryExpTool v1.1.9
 
           使用方式：
           1. 完整解壓縮此 ZIP。
@@ -55,7 +55,9 @@ jobs:
           3. HP 藥水放在 Del，MP 藥水放在 Ins。
           4. 開啟背包後即可讀取楓幣；背包可放在遊戲視窗內任意位置。
           5. 輸入藥水單價後按一次重置，等待起始藥水數量出現。
-          6. 練功結束時按「偵測結算」，或使用「手動結算」輸入結束數量。
+          6. 若起始數量錯誤，可按「修正起始」手動更正。
+          7. 練功結束時按「偵測結算」，或使用「手動結算」輸入結束數量。
+          8. 需要暫停統計時按「時間停止」，再次按下「時間繼續」即可接續。
 
           統計說明：
           - 楓幣淨變化以按下重置後的第一筆正確讀值為基準，可為負數。
@@ -71,7 +73,7 @@ jobs:
           Windows SmartScreen 可能因程式沒有付費數位簽章而顯示提示。
           "@ | Set-Content -LiteralPath "$app\README.txt" -Encoding utf8
 
-          Compress-Archive -LiteralPath $app -DestinationPath "MapleStoryExpTool-1.1.7-Windows-EXE.zip" -CompressionLevel Optimal
+          Compress-Archive -LiteralPath $app -DestinationPath "MapleStoryExpTool-1.1.9-Windows-EXE.zip" -CompressionLevel Optimal
 
       - name: Publish GitHub release
         shell: pwsh
@@ -81,10 +83,23 @@ jobs:
           @"
           ## Windows 版下載方式
 
-          請從 Assets 下載 `MapleStoryExpTool-1.1.7-Windows-EXE.zip`。完整解壓縮後，雙擊 `MapleStoryExpTool.exe`。
+          請從 Assets 下載 `MapleStoryExpTool-1.1.9-Windows-EXE.zip`。完整解壓縮後，雙擊 `MapleStoryExpTool.exe`。
 
           此版本為公開測試版，主要用來收集不同電腦與遊戲畫面下的 HP／MP
           快捷欄辨識結果。若遇到問題，請一併提供 `%APPDATA%\ExpTracker\error.log`。
+
+          ## 1.1.9 時間暫停
+
+          - 在重置旁新增同配色的「時間停止」按鈕
+          - 暫停時凍結持續時間與經驗速率，楓幣及藥水辨識仍會繼續
+          - 再次按「時間繼續」即可接續，暫停期間不列入統計
+          - 按下重置會解除暫停並開始新的統計
+
+          ## 1.1.8 起始數量修正
+
+          - 新增「修正起始」按鈕，可手動覆寫自動 OCR 的 HP／MP 起始數量
+          - 修正起始數量後會清除舊結算結果，避免混用不同基準
+          - 處理快捷欄圖案或邊緣被誤認成額外數字的情況，例如 `702 → 7022`
 
           ## 1.1.7 快照式藥水結算
 
@@ -134,5 +149,4 @@ jobs:
           - 程式未購買數位簽章，Windows 可能顯示 SmartScreen 提示
           "@ | Set-Content -LiteralPath "release-notes.md" -Encoding utf8
 
-          gh release create v1.1.7 "MapleStoryExpTool-1.1.7-Windows-EXE.zip" --target main --prerelease --title "MapleStoryExpTool v1.1.7 測試版" --notes-file "release-notes.md"
-
+          gh release create v1.1.9 "MapleStoryExpTool-1.1.9-Windows-EXE.zip" --target main --prerelease --title "MapleStoryExpTool v1.1.9 測試版" --notes-file "release-notes.md"

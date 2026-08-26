@@ -81,6 +81,29 @@ class EconomyTrackerTests(unittest.TestCase):
         self.assertFalse(self.tracker.settle_potions(10, 20))
         self.assertFalse(self.tracker.begin_potion_settlement())
 
+    def test_manual_start_can_replace_wrong_ocr_snapshot(self):
+        self.capture_start(hp=7022, mp=2732)
+        self.assertTrue(self.tracker.set_potion_start(702, 273, source="manual"))
+
+        self.assertEqual(self.tracker.initial_hp_count, 702)
+        self.assertEqual(self.tracker.initial_mp_count, 273)
+        self.assertEqual(self.tracker.potion_phase, "ready")
+
+        self.tracker.settle_potions(692, 268)
+        snapshot = self.tracker.snapshot()
+        self.assertEqual(snapshot.hp_consumed, 10)
+        self.assertEqual(snapshot.mp_consumed, 5)
+
+    def test_correcting_start_clears_previous_settlement(self):
+        self.capture_start(hp=80, mp=100)
+        self.tracker.settle_potions(75, 96)
+        self.tracker.set_potion_start(79, 99)
+
+        self.assertIsNone(self.tracker.final_hp_count)
+        self.assertIsNone(self.tracker.final_mp_count)
+        self.assertEqual(self.tracker.snapshot().hp_consumed, 0)
+        self.assertEqual(self.tracker.snapshot().mp_consumed, 0)
+
     def test_pickups_can_make_snapshot_consumption_negative(self):
         self.capture_start(hp=80, mp=100)
         self.tracker.settle_potions(82, 101)
@@ -122,4 +145,3 @@ class EconomyTrackerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

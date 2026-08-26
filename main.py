@@ -36,7 +36,7 @@ from economy_tracker import EconomyTracker
 from helper import get_hwnd, get_resource_path
 from ui_ocr_extractor import UiOcrExtractor
 
-APP_VERSION = "1.1.7"
+APP_VERSION = "1.1.9"
 WINDOW_TITLE = "新楓之谷：經典版"
 UPDATE_INTERVAL_MS = 100
 logger = get_logger("main")
@@ -480,6 +480,42 @@ class OverlayButton(QPushButton):
         """)
 
 
+class PinkButton(QPushButton):
+    """Text button matching the pink reset-button palette."""
+
+    def __init__(self, text: str, parent=None):
+        super().__init__(text, parent)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.set_scale(1.0)
+
+    def set_scale(self, scale: float):
+        self.setFixedSize(int(68 * scale), int(16 * scale))
+        self.setStyleSheet(f"""
+            QPushButton {{
+                color: #FFFFFF;
+                background-color: #E247A7;
+                border: {max(1, int(scale))}px solid #8D1B66;
+                border-radius: {max(1, int(scale))}px;
+                padding: 0px;
+                font-size: {max(9, int(11 * scale))}px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: #F05DB8;
+                border-color: #A92879;
+            }}
+            QPushButton:pressed {{
+                background-color: #C82E8E;
+                border-color: #71134F;
+            }}
+            QPushButton:disabled {{
+                color: #E7C8DC;
+                background-color: #A86B92;
+                border-color: #795369;
+            }}
+        """)
+
+
 class SettingsWindow(QDialog):
     settings_changed = Signal()
 
@@ -848,23 +884,40 @@ class OverlayWindow(QWidget):
         self.main_layout.addWidget(self.potion_cost_line)
         self.main_layout.addWidget(self.net_profit_line)
 
-        # Bottom button row
+        # Potion snapshot controls
+        self.potion_button_layout = QHBoxLayout()
+        self.potion_button_layout.setContentsMargins(2, 4, 2, 0)
+        self.potion_button_layout.setSpacing(3)
+
+        self.correct_potion_start_button = OverlayButton("修正起始", self)
+        self.settle_potion_button = OverlayButton("偵測結算", self)
+        self.manual_potion_button = OverlayButton("手動結算", self)
+
+        self.correct_potion_start_button.clicked.connect(self.correct_potion_start_manually)
+        self.settle_potion_button.clicked.connect(self.settle_potions_automatically)
+        self.manual_potion_button.clicked.connect(self.settle_potions_manually)
+
+        self.potion_button_layout.addWidget(self.correct_potion_start_button)
+        self.potion_button_layout.addWidget(self.settle_potion_button)
+        self.potion_button_layout.addWidget(self.manual_potion_button)
+
+        # Bottom reset / timer row
         self.button_layout = QHBoxLayout()
         self.button_layout.setContentsMargins(6, 4, 6, 0)
         self.button_layout.setSpacing(4)
 
         self.reset_button = ImageButton("resources/reset/", self)
-        self.settle_potion_button = OverlayButton("偵測結算", self)
-        self.manual_potion_button = OverlayButton("手動結算", self)
+        self.time_pause_button = PinkButton("時間停止", self)
 
         self.reset_button.clicked.connect(self.reset_tracker)
-        self.settle_potion_button.clicked.connect(self.settle_potions_automatically)
-        self.manual_potion_button.clicked.connect(self.settle_potions_manually)
+        self.time_pause_button.clicked.connect(self.toggle_time_pause)
 
+        self.button_layout.addStretch()
         self.button_layout.addWidget(self.reset_button)
-        self.button_layout.addWidget(self.settle_potion_button)
-        self.button_layout.addWidget(self.manual_potion_button)
+        self.button_layout.addWidget(self.time_pause_button)
+        self.button_layout.addStretch()
 
+        self.main_layout.addLayout(self.potion_button_layout)
         self.main_layout.addLayout(self.button_layout)
         self.frame_layout.addLayout(self.main_layout)
 
@@ -884,6 +937,9 @@ class OverlayWindow(QWidget):
         self.verified_abs_exp = -1.0
         self.last_gain_time = 0.0
         self.active_session_start = -1.0
+        self.time_paused = False
+        self.time_pause_started = 0.0
+        self._resume_rebaseline_pending = False
 
         # History queue
         self.exp_history = collections.deque()
@@ -1000,8 +1056,14 @@ class OverlayWindow(QWidget):
 
         self.button_layout.setContentsMargins(int(6 * scale), int(4 * scale), int(6 * scale), 0)
         self.button_layout.setSpacing(int(4 * scale))
+        self.potion_button_layout.setContentsMargins(
+            int(2 * scale), int(4 * scale), int(2 * scale), 0
+        )
+        self.potion_button_layout.setSpacing(int(3 * scale))
 
         self.reset_button.set_scale(scale)
+        self.time_pause_button.set_scale(scale)
+        self.correct_potion_start_button.set_scale(scale)
         self.settle_potion_button.set_scale(scale)
         self.manual_potion_button.set_scale(scale)
 
@@ -1025,6 +1087,10 @@ class OverlayWindow(QWidget):
         self.exp_history.clear()
         self.last_history_update = 0.0
         self.last_data = None
+        self.time_paused = False
+        self.time_pause_started = 0.0
+        self._resume_rebaseline_pending = False
+        self.time_pause_button.setText("時間停止")
         self._economy_accept_after = time.monotonic() + 0.5
         self.worker.request_economy_reset()
         self.economy_tracker.reset()
@@ -1036,6 +1102,44 @@ class OverlayWindow(QWidget):
         self.level_estimate_line.set_text("距離升等還要：計算中...")
         self.active_time_line.set_text("持續練等：00:00")
         self.refresh_economy_lines()
+
+        self.recompute_visibility()
+
+    @Slot()
+    def toggle_time_pause(self):
+        current_time = time.time()
+
+        if not self.time_paused:
+            self.time_paused = True
+            self.time_pause_started = current_time
+            self.time_pause_button.setText("時間繼續")
+
+            current_text = self.active_time_line._full_text
+            if current_text and "已停止" not in current_text:
+                self.active_time_line.set_text(f"{current_text}（已停止）")
+            logger.info("Tracking timer paused")
+        else:
+            paused_seconds = max(0.0, current_time - self.time_pause_started)
+
+            # Move every tracking timestamp forward so the paused wall-clock
+            # interval cannot affect active time, idle detection or EXP rate.
+            if self.active_session_start >= 0.0:
+                self.active_session_start += paused_seconds
+            if self.last_gain_time > 0.0:
+                self.last_gain_time += paused_seconds
+            if self.last_history_update > 0.0:
+                self.last_history_update += paused_seconds
+            if self.exp_history:
+                self.exp_history = collections.deque(
+                    (timestamp + paused_seconds, value)
+                    for timestamp, value in self.exp_history
+                )
+
+            self.time_paused = False
+            self.time_pause_started = 0.0
+            self._resume_rebaseline_pending = True
+            self.time_pause_button.setText("時間停止")
+            logger.info("Tracking timer resumed paused_seconds=%.3f", paused_seconds)
 
         self.recompute_visibility()
 
@@ -1053,6 +1157,43 @@ class OverlayWindow(QWidget):
         self.potion_count_line.set_text("藥水結算：重新偵測中...")
         logger.info("Automatic potion settlement started")
         self.recompute_visibility()
+
+    @Slot()
+    def correct_potion_start_manually(self):
+        tracker = self.economy_tracker
+        hp_default = tracker.initial_hp_count
+        if hp_default is None:
+            hp_default = tracker.last_hp_count or 0
+        hp_count, accepted = QInputDialog.getInt(
+            self,
+            "修正起始藥水",
+            "練功開始時 HP 藥水數量：",
+            int(hp_default),
+            0,
+            2_000_000_000,
+            1,
+        )
+        if not accepted:
+            return
+
+        mp_default = tracker.initial_mp_count
+        if mp_default is None:
+            mp_default = tracker.last_mp_count or 0
+        mp_count, accepted = QInputDialog.getInt(
+            self,
+            "修正起始藥水",
+            "練功開始時 MP 藥水數量：",
+            int(mp_default),
+            0,
+            2_000_000_000,
+            1,
+        )
+        if not accepted:
+            return
+
+        if tracker.set_potion_start(hp_count, mp_count, source="manual"):
+            self.refresh_economy_lines()
+            self.recompute_visibility()
 
     @Slot()
     def settle_potions_manually(self):
@@ -1149,6 +1290,27 @@ class OverlayWindow(QWidget):
 
         current_abs_exp = self.base_exp_for_level[level] + experience
 
+        # Freeze the EXP/timer session while leaving the independent economy
+        # OCR pipeline running.  The displayed values therefore remain stable.
+        if self.time_paused:
+            return
+
+        current_time = time.time()
+
+        if self._resume_rebaseline_pending:
+            if self.verified_abs_exp != -1.0:
+                paused_exp_delta = current_abs_exp - self.verified_abs_exp
+                if paused_exp_delta:
+                    # Ignore EXP obtained while paused without destroying the
+                    # valid pre-pause rate window.
+                    self.exp_history = collections.deque(
+                        (timestamp, value + paused_exp_delta)
+                        for timestamp, value in self.exp_history
+                    )
+                self.verified_abs_exp = current_abs_exp
+            self.last_gain_time = current_time
+            self._resume_rebaseline_pending = False
+
         # 2. Strict jump rejection check (> 5% of level EXP requirement).
         if self.verified_abs_exp != -1.0:
             delta = current_abs_exp - self.verified_abs_exp
@@ -1156,8 +1318,6 @@ class OverlayWindow(QWidget):
 
             if delta > max_allowed_jump:
                 return
-
-        current_time = time.time()
 
         # Initial initialization.
         if self.verified_abs_exp == -1.0:
@@ -1313,4 +1473,3 @@ if __name__ == "__main__":
     window = OverlayWindow()
     window.show()
     sys.exit(app.exec())
-

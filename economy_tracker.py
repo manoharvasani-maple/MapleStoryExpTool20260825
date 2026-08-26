@@ -94,6 +94,35 @@ class EconomyTracker:
         )
         return True
 
+    def set_potion_start(self, hp_count, mp_count, source: str = "manual") -> bool:
+        """Create or correct the start snapshot with user-confirmed counts."""
+        try:
+            hp = int(hp_count)
+            mp = int(mp_count)
+        except (TypeError, ValueError):
+            return False
+        if hp < 0 or mp < 0:
+            return False
+
+        self.initial_hp_count = hp
+        self.initial_mp_count = mp
+        self.final_hp_count = None
+        self.final_mp_count = None
+        self.last_hp_count = hp
+        self.last_mp_count = mp
+        self.hp_consumed = 0
+        self.mp_consumed = 0
+        self.potion_phase = "ready"
+        for key in ("start_hp", "start_mp", "end_hp", "end_mp"):
+            self._pending.pop(key, None)
+        logger.info(
+            "Potion start snapshot set source=%s hp=%s mp=%s",
+            source,
+            hp,
+            mp,
+        )
+        return True
+
     def settle_potions(self, hp_count, mp_count, source: str = "manual") -> bool:
         """Set the final counts directly, normally from the manual dialog."""
         if not self.has_potion_start:
@@ -209,4 +238,3 @@ class EconomyTracker:
 
         self._pending[key] = (candidate, reads)
         return None
-
