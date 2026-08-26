@@ -25,8 +25,11 @@ TEMPLATE_DIST = 573.0
 INVENTORY_TITLE_TEMPLATE_ORIGIN = (8, 7)
 INVENTORY_MESO_OFFSET = (66, 305, 128, 323)
 QUICKBAR_BOTTOM_TEMPLATE_ORIGIN = (0, 75)
-QUICKBAR_MP_OFFSET = (41, 32, 71, 43)  # Ins slot, quantity only
-QUICKBAR_HP_OFFSET = (37, 65, 63, 78)  # Del slot, quantity only
+# Include the complete pixel-font counters.  The previous boxes clipped the
+# first/last digit edges (especially four-digit HP stacks) and included too
+# much of the hotkey label, which could turn 1510 into 1500 or 773 into 763.
+QUICKBAR_MP_OFFSET = (40, 29, 70, 45)  # Ins slot, quantity only
+QUICKBAR_HP_OFFSET = (40, 65, 73, 78)  # Del slot, quantity only
 AUX_TEMPLATE_THRESHOLD = 0.80
 AUX_DETECT_INTERVAL_FRAMES = 5
 
@@ -204,12 +207,15 @@ class UiOcrExtractor:
             return last_value, 1.0
 
         try:
-            recognition_image = (
-                self._prepare_quickbar_digits(img, quickbar_mode)
-                if quickbar_mode
-                else img
-            )
-            text, confidence = self._model.recognize(recognition_image)
+            if quickbar_mode:
+                value, confidence, text = self._recognize_quickbar_digits(
+                    img,
+                    last_value,
+                )
+            else:
+                text, confidence = self._model.recognize(img)
+                digits = re.sub(r'\D', '', text)
+                value = int(digits) if digits else None
         except Exception:
             if self._should_log(f"numeric_recognition:{value_attr}"):
                 logger.exception(
@@ -220,7 +226,7 @@ class UiOcrExtractor:
                 )
             return None, 0.0
 
-        digits = re.sub(r'\D', '', text)
+        digits = re.sub(r'\D', '', text or '')
         if (confidence is None or confidence < 0.8 or not digits) and self._should_log(
                 f"numeric_low_confidence:{value_attr}"
         ):
@@ -234,9 +240,7 @@ class UiOcrExtractor:
         if not digits:
             return None, 0.0
 
-        try:
-            value = int(digits)
-        except ValueError:
+        if value is None:
             return None, 0.0
 
         # Cache only a successful result. Caching before inference could turn a
@@ -244,6 +248,96 @@ class UiOcrExtractor:
         setattr(self, array_attr, img.copy())
         setattr(self, value_attr, value)
         return value, confidence
+
+    def _recognize_quickbar_digits(self, image, previous_value):
+        """Recognize a tiny outlined counter using several conservative views.
+
+        The general OCR model is prone to returning an over-confident partial
+        number for MapleStory's 8-pixel counter font.  Enlarging the raw crop
+        with both nearest-neighbour and Lanczos interpolation preserves
+        different digit details.  We then prefer a full-length consensus and,
+        once a baseline exists, candidates close to the previous valid count.
+        """
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        gray_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        variants = []
+
+        for source in (image, gray_bgr):
+            variants.append(cv2.resize(
+                source,
+                None,
+                fx=2,
+                fy=2,
+                interpolation=cv2.INTER_NEAREST,
+            ))
+            for scale in (3, 4):
+                enlarged = cv2.resize(
+                    source,
+                    None,
+                    fx=scale,
+                    fy=scale,
+                    interpolation=cv2.INTER_LANCZOS4,
+                )
+                variants.append(cv2.copyMakeBorder(
+                    enlarged,
+                    4,
+                    4,
+                    4,
+                    4,
+                    cv2.BORDER_CONSTANT,
+                    value=(0, 0, 0),
+                ))
+
+        candidates = []
+        raw_texts = []
+        for variant in variants:
+            text, confidence = self._model.recognize(variant)
+            raw_texts.append(text)
+            digits = re.sub(r'\D', '', text)
+            if not digits or len(digits) > 5:
+                continue
+            candidates.append((int(digits), float(confidence), digits, text))
+
+        if not candidates:
+            return None, 0.0, " | ".join(raw_texts)
+
+        if previous_value is None:
+            length_counts = {}
+            for _, _, digits, _ in candidates:
+                length_counts[len(digits)] = length_counts.get(len(digits), 0) + 1
+
+            supported_lengths = [
+                length for length, count in length_counts.items() if count >= 2
+            ]
+            target_length = max(supported_lengths or length_counts)
+            pool = [item for item in candidates if len(item[2]) == target_length]
+        else:
+            previous_length = len(str(previous_value))
+            pool = [
+                item for item in candidates
+                if len(item[2]) == previous_length
+                and abs(item[0] - previous_value) <= 4
+            ]
+            if not pool:
+                return None, 0.0, " | ".join(raw_texts)
+
+        value_counts = {}
+        for value, _, _, _ in pool:
+            value_counts[value] = value_counts.get(value, 0) + 1
+        best_frequency = max(value_counts.values())
+        most_common = [
+            item for item in pool if value_counts[item[0]] == best_frequency
+        ]
+
+        if previous_value is not None:
+            nearest_delta = min(abs(item[0] - previous_value) for item in most_common)
+            most_common = [
+                item for item in most_common
+                if abs(item[0] - previous_value) == nearest_delta
+            ]
+
+        value, confidence, _, text = max(most_common, key=lambda item: item[1])
+        return value, confidence, text
 
     def _prepare_quickbar_digits(self, image, mode):
         """Normalize the outlined pixel font used by quick-slot counters."""
