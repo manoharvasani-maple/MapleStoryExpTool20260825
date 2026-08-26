@@ -66,21 +66,39 @@ class EconomyTrackerTests(unittest.TestCase):
         self.assertEqual(snapshot.mp_consumed, 3)
         self.assertEqual(snapshot.potion_cost, 900)
 
-    def test_large_ocr_drop_rebases_without_counting(self):
+    def test_large_ocr_drop_keeps_last_valid_baseline(self):
         self.confirm(mp_count=126)
         self.confirm(mp_count=26)
         self.assertEqual(self.tracker.snapshot().mp_consumed, 0)
-        self.assertEqual(self.tracker.last_mp_count, 26)
-        self.confirm(mp_count=25)
+        self.assertEqual(self.tracker.last_mp_count, 126)
+        self.confirm(mp_count=125)
         self.assertEqual(self.tracker.snapshot().mp_consumed, 1)
 
-    def test_large_ocr_gain_rebases_without_negative_spike(self):
+    def test_large_ocr_gain_keeps_last_valid_baseline(self):
         self.confirm(mp_count=2)
         self.confirm(mp_count=12160)
         self.assertEqual(self.tracker.snapshot().mp_consumed, 0)
-        self.assertEqual(self.tracker.last_mp_count, 12160)
-        self.confirm(mp_count=12159)
+        self.assertEqual(self.tracker.last_mp_count, 2)
+        self.confirm(mp_count=1)
         self.assertEqual(self.tracker.snapshot().mp_consumed, 1)
+
+    def test_blue_potion_ocr_jump_of_ten_is_ignored(self):
+        self.confirm(mp_count=773)
+        self.confirm(mp_count=763)
+        self.assertEqual(self.tracker.last_mp_count, 773)
+        self.assertEqual(self.tracker.snapshot().mp_consumed, 0)
+
+        self.confirm(mp_count=772)
+        self.assertEqual(self.tracker.snapshot().mp_consumed, 1)
+
+    def test_white_potion_recovery_does_not_become_negative_eight(self):
+        self.confirm(hp_count=1510)
+        self.confirm(hp_count=1500)
+        self.assertEqual(self.tracker.last_hp_count, 1510)
+        self.assertEqual(self.tracker.snapshot().hp_consumed, 0)
+
+        self.confirm(hp_count=1508)
+        self.assertEqual(self.tracker.snapshot().hp_consumed, 2)
 
     def test_net_profit_subtracts_manual_prices(self):
         self.confirm(meso=1000, hp_count=10, mp_count=10)
