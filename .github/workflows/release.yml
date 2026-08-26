@@ -2,12 +2,18 @@ name: Build and publish Windows release
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/release.yml"
 
 permissions:
   contents: write
 
 jobs:
   release:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release v1.1.7]')
     runs-on: windows-latest
     steps:
       - name: Check out source
@@ -47,20 +53,21 @@ jobs:
           }
 
           @"
-          MapleStoryExpTool v1.1.6
+          MapleStoryExpTool v1.1.7
 
           使用方式：
           1. 完整解壓縮此 ZIP。
           2. 雙擊 MapleStoryExpTool.exe。
           3. HP 藥水放在 Del，MP 藥水放在 Ins。
           4. 開啟背包後即可讀取楓幣；背包可放在遊戲視窗內任意位置。
-          5. 輸入藥水單價後按一次重置，開始新的統計。
+          5. 輸入藥水單價後按一次重置，等待起始藥水數量出現。
+          6. 練功結束時按「偵測結算」，或使用「手動結算」輸入結束數量。
 
           統計說明：
           - 楓幣淨變化以按下重置後的第一筆正確讀值為基準，可為負數。
-          - 撿到同種藥水會抵銷藥水消耗，因此藥水消耗也可為負數。
-          - 藥水讀數需連續出現三次；單次跳動 5 瓶以上會忽略且不改寫正確基準。
-          - 大量補充或更換藥水後，請按一次重置。
+          - 藥水消耗只比較重置後起始快照與結算快照。
+          - 練功途中 OCR 讀值不會改寫藥水消耗。
+          - 撿到同種藥水會抵銷藥水消耗，因此結果也可為負數。
 
           診斷日誌：
           - 錯誤紀錄位於 %APPDATA%\ExpTracker\error.log。
@@ -70,7 +77,7 @@ jobs:
           Windows SmartScreen 可能因程式沒有付費數位簽章而顯示提示。
           "@ | Set-Content -LiteralPath "$app\README.txt" -Encoding utf8
 
-          Compress-Archive -LiteralPath $app -DestinationPath "MapleStoryExpTool-1.1.6-Windows-EXE.zip" -CompressionLevel Optimal
+          Compress-Archive -LiteralPath $app -DestinationPath "MapleStoryExpTool-1.1.7-Windows-EXE.zip" -CompressionLevel Optimal
 
       - name: Publish GitHub release
         shell: pwsh
@@ -80,10 +87,18 @@ jobs:
           @"
           ## Windows 版下載方式
 
-          請從 Assets 下載 `MapleStoryExpTool-1.1.6-Windows-EXE.zip`。完整解壓縮後，雙擊 `MapleStoryExpTool.exe`。
+          請從 Assets 下載 `MapleStoryExpTool-1.1.7-Windows-EXE.zip`。完整解壓縮後，雙擊 `MapleStoryExpTool.exe`。
 
           此版本為公開測試版，主要用來收集不同電腦與遊戲畫面下的 HP／MP
           快捷欄辨識結果。若遇到問題，請一併提供 `%APPDATA%\ExpTracker\error.log`。
+
+          ## 1.1.7 快照式藥水結算
+
+          - 重置後自動保存 HP／MP 起始數量
+          - 練功途中不再依每一次 OCR 變化累加藥水消耗
+          - 新增「偵測結算」，用第二次偵測數量計算總消耗
+          - 新增「手動結算」，辨識失敗時可自行輸入結束數量
+          - 藥水消耗、成本與淨收益只依起始／結束兩次快照計算
 
           ## 1.1.6 修正
 
@@ -125,5 +140,5 @@ jobs:
           - 程式未購買數位簽章，Windows 可能顯示 SmartScreen 提示
           "@ | Set-Content -LiteralPath "release-notes.md" -Encoding utf8
 
-          gh release create v1.1.6 "MapleStoryExpTool-1.1.6-Windows-EXE.zip" --target main --prerelease --title "MapleStoryExpTool v1.1.6 測試版" --notes-file "release-notes.md"
+          gh release create v1.1.7 "MapleStoryExpTool-1.1.7-Windows-EXE.zip" --target main --prerelease --title "MapleStoryExpTool v1.1.7 測試版" --notes-file "release-notes.md"
 
