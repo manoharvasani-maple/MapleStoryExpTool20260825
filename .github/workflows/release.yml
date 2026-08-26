@@ -2,12 +2,18 @@ name: Build and publish Windows release
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/release.yml"
 
 permissions:
   contents: write
 
 jobs:
   release:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release v1.1.5]')
     runs-on: windows-latest
     steps:
       - name: Check out source
@@ -47,7 +53,7 @@ jobs:
           }
 
           @"
-          MapleStoryExpTool v1.1.4
+          MapleStoryExpTool v1.1.5
 
           使用方式：
           1. 完整解壓縮此 ZIP。
@@ -59,7 +65,8 @@ jobs:
           統計說明：
           - 楓幣淨變化以按下重置後的第一筆正確讀值為基準，可為負數。
           - 撿到同種藥水會抵銷藥水消耗，因此藥水消耗也可為負數。
-          - 單次藥水數量跳動超過 10 瓶時，會視為 OCR 異常並重新建立基準。
+          - 藥水讀數需連續出現三次；單次跳動 5 瓶以上會忽略且不改寫正確基準。
+          - 大量補充或更換藥水後，請按一次重置。
 
           診斷日誌：
           - 錯誤紀錄位於 %APPDATA%\ExpTracker\error.log。
@@ -69,7 +76,7 @@ jobs:
           Windows SmartScreen 可能因程式沒有付費數位簽章而顯示提示。
           "@ | Set-Content -LiteralPath "$app\README.txt" -Encoding utf8
 
-          Compress-Archive -LiteralPath $app -DestinationPath "MapleStoryExpTool-1.1.4-Windows-EXE.zip" -CompressionLevel Optimal
+          Compress-Archive -LiteralPath $app -DestinationPath "MapleStoryExpTool-1.1.5-Windows-EXE.zip" -CompressionLevel Optimal
 
       - name: Publish GitHub release
         shell: pwsh
@@ -79,7 +86,15 @@ jobs:
           @"
           ## Windows 版下載方式
 
-          請從 Assets 下載 `MapleStoryExpTool-1.1.4-Windows-EXE.zip`。完整解壓縮後，雙擊 `MapleStoryExpTool.exe`。
+          請從 Assets 下載 `MapleStoryExpTool-1.1.5-Windows-EXE.zip`。完整解壓縮後，雙擊 `MapleStoryExpTool.exe`。
+
+          ## 1.1.5 修正
+
+          - 校正 HP／MP 快捷欄數字裁切範圍，完整保留四位數字緣
+          - 使用多種放大方式交叉辨識快捷欄像素字體
+          - 修正藍水使用 1 瓶可能跳成 10 瓶
+          - 修正白水 1510 降到 1508 可能顯示 -8
+          - 藥水統計改為重置基準減去目前確認數量，OCR 異常不再改寫基準
 
           ## 1.1.4 新增
 
@@ -93,7 +108,7 @@ jobs:
 
           - 楓幣改為相對重置基準的淨變化，避免 OCR 暫時誤讀後恢復造成重複累加
           - 撿到同種藥水時會抵銷藥水消耗，結果允許為負數
-          - 過濾單次超過 10 瓶的藥水 OCR 異常跳動
+          - 過濾藥水 OCR 異常跳動
           - 藥水成本與扣除藥水後淨收益會依淨消耗重新計算
 
           ## 注意事項
@@ -105,5 +120,5 @@ jobs:
           - 程式未購買數位簽章，Windows 可能顯示 SmartScreen 提示
           "@ | Set-Content -LiteralPath "release-notes.md" -Encoding utf8
 
-          gh release create v1.1.4 "MapleStoryExpTool-1.1.4-Windows-EXE.zip" --target main --title "MapleStoryExpTool v1.1.4" --notes-file "release-notes.md"
+          gh release create v1.1.5 "MapleStoryExpTool-1.1.5-Windows-EXE.zip" --target main --title "MapleStoryExpTool v1.1.5" --notes-file "release-notes.md"
 
