@@ -1,5 +1,10 @@
 from dataclasses import dataclass
 
+from diagnostics import get_logger
+
+
+logger = get_logger("economy")
+
 
 @dataclass(frozen=True)
 class EconomySnapshot:
@@ -82,6 +87,7 @@ class EconomyTracker:
         if previous is None:
             setattr(self, initial_attr, confirmed)
             setattr(self, attr, confirmed)
+            logger.info("Potion baseline kind=%s count=%s", kind, confirmed)
             return False
 
         change = confirmed - previous
@@ -90,6 +96,14 @@ class EconomyTracker:
             # filter. Do not rebase on it: recovery from a false baseline can
             # otherwise look like a pickup (for example 1500 -> 1508 = -8).
             # Press Reset after intentionally replacing a large stack.
+            logger.warning(
+                "Rejected potion jump kind=%s previous=%s candidate=%s delta=%s limit=%s",
+                kind,
+                previous,
+                confirmed,
+                change,
+                self.max_potion_drop,
+            )
             return False
 
         if confirmed == previous:
@@ -101,6 +115,13 @@ class EconomyTracker:
         changed = new_consumed != getattr(self, consumed_attr)
         setattr(self, attr, confirmed)
         setattr(self, consumed_attr, new_consumed)
+        logger.info(
+            "Accepted potion change kind=%s previous=%s current=%s net_consumed=%s",
+            kind,
+            previous,
+            confirmed,
+            new_consumed,
+        )
         return changed
 
     def _confirm(self, key: str, value):
