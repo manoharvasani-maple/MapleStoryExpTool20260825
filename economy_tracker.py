@@ -17,10 +17,13 @@ class EconomyTracker:
 
     def __init__(self, confirmation_reads: int = 2, max_potion_drop: int = 10):
         self.confirmation_reads = max(1, int(confirmation_reads))
+        # Keep the public argument/property name for compatibility with 1.1.0,
+        # but apply the limit symmetrically to both gains and drops.
         self.max_potion_drop = max(1, int(max_potion_drop))
         self.reset()
 
     def reset(self) -> None:
+        self.initial_meso = None
         self.last_meso = None
         self.last_hp_count = None
         self.last_mp_count = None
@@ -34,11 +37,18 @@ class EconomyTracker:
 
         confirmed_meso = self._confirm("meso", meso)
         if confirmed_meso is not None:
-            if self.last_meso is None or confirmed_meso != self.last_meso:
+            if self.initial_meso is None:
+                self.initial_meso = confirmed_meso
+
+            net_meso_change = confirmed_meso - self.initial_meso
+            if (
+                self.last_meso is None
+                or confirmed_meso != self.last_meso
+                or net_meso_change != self.meso_gained
+            ):
                 changed = True
-            if self.last_meso is not None and confirmed_meso > self.last_meso:
-                self.meso_gained += confirmed_meso - self.last_meso
             self.last_meso = confirmed_meso
+            self.meso_gained = net_meso_change
 
         changed |= self._update_potion("hp", hp_count)
         changed |= self._update_potion("mp", mp_count)
@@ -70,12 +80,17 @@ class EconomyTracker:
             setattr(self, attr, confirmed)
             return False
 
+        change = confirmed - previous
+        if abs(change) > self.max_potion_drop:
+            # A two-frame OCR error can still pass the ordinary confirmation
+            # filter.  Rebase without changing the total so the tracker can
+            # recover on the next valid reading instead of applying a huge
+            # negative value or remaining stuck on the old baseline.
+            setattr(self, attr, confirmed)
+            return False
+
         if confirmed < previous:
             consumed = previous - confirmed
-            # The quick bar is sampled continuously. A large one-step decrease is
-            # almost certainly a missing OCR digit, not real potion consumption.
-            if consumed > self.max_potion_drop:
-                return False
             if kind == "hp":
                 self.hp_consumed += consumed
             else:
@@ -83,9 +98,18 @@ class EconomyTracker:
             setattr(self, attr, confirmed)
             return True
 
-        # Counter increases are restocks and establish a new baseline.
+        # Treat counter increases as potions obtained during the session.  The
+        # displayed value is intentionally a net consumption estimate: potions
+        # gained while training reduce the accumulated consumption.  A negative
+        # result means that the session gained more potions than it consumed.
         if confirmed > previous:
+            obtained = confirmed - previous
+            if kind == "hp":
+                self.hp_consumed -= obtained
+            else:
+                self.mp_consumed -= obtained
             setattr(self, attr, confirmed)
+            return True
         return False
 
     def _confirm(self, key: str, value):
@@ -115,3 +139,4 @@ class EconomyTracker:
 
         self._pending[key] = (candidate, reads)
         return None
+
