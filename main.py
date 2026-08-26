@@ -35,7 +35,7 @@ from economy_tracker import EconomyTracker
 from helper import get_hwnd, get_resource_path
 from ui_ocr_extractor import UiOcrExtractor
 
-APP_VERSION = "1.1.4"
+APP_VERSION = "1.1.5"
 WINDOW_TITLE = "新楓之谷：經典版"
 UPDATE_INTERVAL_MS = 100
 logger = get_logger("main")
@@ -873,9 +873,13 @@ class OverlayWindow(QWidget):
         self.exp_history = collections.deque()
         self.last_history_update = 0.0
 
-        # Economy tracking state. New values must be seen in two consecutive
-        # reads before they can affect the totals.
-        self.economy_tracker = EconomyTracker(confirmation_reads=2)
+        # Potion counters use a tiny pixel font. Require three consecutive
+        # readings and reject changes of five or more bottles so a clipped OCR
+        # digit cannot turn one use into a jump of 10 or a false pickup of 8.
+        self.economy_tracker = EconomyTracker(
+            confirmation_reads=3,
+            max_potion_drop=5,
+        )
         self.refresh_economy_lines()
 
         # Worker initialization comes last so signals cannot race the state above.
