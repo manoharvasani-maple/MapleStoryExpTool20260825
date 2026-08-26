@@ -1,11 +1,16 @@
 import re
+import time
 
 import cv2
 import numpy as np
 import onnxruntime as ort
 import yaml
 
+from diagnostics import get_logger
 from helper import get_resource_path
+
+
+logger = get_logger("ocr")
 
 # Bounding box offsets (lv template top-left corner as origin)
 LV_OFFSET = (32, 11, 76, 23)
@@ -50,6 +55,8 @@ class UiOcrExtractor:
         self._inventory_available = False
         self._quickbar_available = False
         self._aux_frame_counter = 0
+        self._last_aux_state = None
+        self._last_log_times = {}
 
         # Skip check: skip inferencing if no change
         self._lv_last_array = None
@@ -64,6 +71,14 @@ class UiOcrExtractor:
         self._mp_potion_last = None
 
         self._model = PPOCRv6TinyTextRecognition(MODEL_PATH, CONFIG_PATH)
+
+    def _should_log(self, key: str, interval_sec: float = 10.0) -> bool:
+        now = time.monotonic()
+        previous = self._last_log_times.get(key, 0.0)
+        if now - previous < interval_sec:
+            return False
+        self._last_log_times[key] = now
+        return True
 
     def is_available(self) -> bool:
         return self._scale > 0
@@ -110,12 +125,22 @@ class UiOcrExtractor:
         # Inference
         try:
             text, confidence = self._model.recognize(img)
-        except Exception as err:
-            print(f"[UiOcrExtractor] LV recognition failed: {err}")
+        except Exception:
+            if self._should_log("lv_recognition"):
+                logger.exception("Level recognition failed crop_shape=%s", img.shape)
             return 0, 0
 
         # Remove non-digit
         digits = re.sub(r'\D', '', text)
+        if (confidence is None or confidence < 0.8 or not digits) and self._should_log(
+                "lv_low_confidence"
+        ):
+            logger.warning(
+                "Low-confidence level OCR confidence=%s raw_text=%r crop_shape=%s",
+                confidence,
+                text,
+                img.shape,
+            )
 
         # Target 1 to 3 digits
         if len(digits) >= 1:
@@ -185,11 +210,27 @@ class UiOcrExtractor:
                 else img
             )
             text, confidence = self._model.recognize(recognition_image)
-        except Exception as err:
-            print(f"[UiOcrExtractor] Numeric recognition failed: {err}")
+        except Exception:
+            if self._should_log(f"numeric_recognition:{value_attr}"):
+                logger.exception(
+                    "Numeric recognition failed field=%s crop_shape=%s quickbar_mode=%s",
+                    value_attr,
+                    img.shape,
+                    quickbar_mode,
+                )
             return None, 0.0
 
         digits = re.sub(r'\D', '', text)
+        if (confidence is None or confidence < 0.8 or not digits) and self._should_log(
+                f"numeric_low_confidence:{value_attr}"
+        ):
+            logger.warning(
+                "Low-confidence numeric OCR field=%s confidence=%s raw_text=%r crop_shape=%s",
+                value_attr,
+                confidence,
+                text,
+                img.shape,
+            )
         if not digits:
             return None, 0.0
 
@@ -244,12 +285,22 @@ class UiOcrExtractor:
         # Inference
         try:
             text, confidence = self._model.recognize(img)
-        except Exception as err:
-            print(f"[UiOcrExtractor] EXP recognition failed: {err}")
+        except Exception:
+            if self._should_log("exp_recognition"):
+                logger.exception("Experience recognition failed crop_shape=%s", img.shape)
             return 0, 0
 
         # Extract the first number-like value containing digits, spaces, and dots
         match = re.search(r'^\D*([\d\s.]*?\d)(?=\D|$)', text)
+        if (confidence is None or confidence < 0.8 or match is None) and self._should_log(
+                "exp_low_confidence"
+        ):
+            logger.warning(
+                "Low-confidence experience OCR confidence=%s raw_text=%r crop_shape=%s",
+                confidence,
+                text,
+                img.shape,
+            )
 
         if match:
             # Remove non-digit
@@ -280,6 +331,12 @@ class UiOcrExtractor:
     def update(self, screenshot: np.ndarray) -> None:
         if screenshot is None or screenshot.size == 0 or screenshot.ndim < 2:
             # Nothing usable in this frame
+            if self._should_log("invalid_frame"):
+                logger.warning(
+                    "Received unusable capture frame is_none=%s shape=%s",
+                    screenshot is None,
+                    getattr(screenshot, "shape", None),
+                )
             self._screenshot = screenshot
             self._scale = 0
             self._inventory_available = False
@@ -326,6 +383,13 @@ class UiOcrExtractor:
                     best_pos_b = pos_b
 
             if best_score_a < 0.8 or best_score_b < 0.8:  # No match found
+                if self._should_log("base_template_not_found"):
+                    logger.warning(
+                        "Base UI templates not found frame_size=%s score_lv=%.3f score_shop=%.3f",
+                        size,
+                        best_score_a,
+                        best_score_b,
+                    )
                 self._scale = 0
                 self._inventory_available = False
                 self._quickbar_available = False
@@ -334,21 +398,37 @@ class UiOcrExtractor:
             new_scale = (best_pos_b[0] - best_pos_a[0]) / TEMPLATE_DIST
 
             if new_scale < 0.1 or new_scale > 4:  # No match found / nonsensical scale
+                if self._should_log("invalid_ui_scale"):
+                    logger.warning(
+                        "Detected nonsensical UI scale=%.3f frame_size=%s positions=%s/%s",
+                        new_scale,
+                        size,
+                        best_pos_a,
+                        best_pos_b,
+                    )
                 self._scale = 0
                 self._inventory_available = False
                 self._quickbar_available = False
                 return
 
             self._scale = new_scale
+            logger.info(
+                "Base UI detected frame_size=%s scale=%.3f score_lv=%.3f score_shop=%.3f",
+                size,
+                self._scale,
+                best_score_a,
+                best_score_b,
+            )
             self._lv_box = self._compute_box(best_pos_a, LV_OFFSET)
             self._exp_box = self._compute_box(best_pos_a, EXP_OFFSET)
             self._update_auxiliary_matches(force=True, gray=gray)
 
-        except Exception as err:
+        except Exception:
             # Any failure in template matching (odd frame format, OpenCV error, etc.)
             # should leave the extractor in a well-defined "not detected" state
             # rather than propagating and crashing the capture thread.
-            print(f"[UiOcrExtractor] UI scale detection failed: {err}")
+            if self._should_log("ui_scale_exception"):
+                logger.exception("UI scale detection failed frame_size=%s", size)
             self._scale = 0
             self._inventory_available = False
             self._quickbar_available = False
@@ -367,6 +447,11 @@ class UiOcrExtractor:
             try:
                 gray = cv2.cvtColor(self._screenshot, cv2.COLOR_BGRA2GRAY)
             except Exception:
+                if self._should_log("grayscale_conversion"):
+                    logger.exception(
+                        "Failed to convert capture frame to grayscale shape=%s",
+                        getattr(self._screenshot, "shape", None),
+                    )
                 self._inventory_available = False
                 self._quickbar_available = False
                 return
@@ -382,6 +467,18 @@ class UiOcrExtractor:
 
         self._inventory_available = inventory_match[0] >= AUX_TEMPLATE_THRESHOLD
         self._quickbar_available = quickbar_match[0] >= AUX_TEMPLATE_THRESHOLD
+
+        aux_state = (self._inventory_available, self._quickbar_available)
+        if aux_state != self._last_aux_state:
+            logger.info(
+                "Auxiliary UI detection inventory=%s score=%.3f quickbar=%s score=%.3f scale=%.3f",
+                self._inventory_available,
+                inventory_match[0],
+                self._quickbar_available,
+                quickbar_match[0],
+                self._scale,
+            )
+            self._last_aux_state = aux_state
 
         if self._inventory_available:
             inventory_origin = self._widget_origin(
@@ -580,3 +677,4 @@ class PPOCRv6TinyTextRecognition:
         text, confidence = self.decode(pred)
 
         return text, confidence
+
