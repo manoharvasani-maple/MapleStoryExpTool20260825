@@ -2,12 +2,18 @@ name: Build and publish Windows release
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/release.yml"
 
 permissions:
   contents: write
 
 jobs:
   release:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release v1.1.9]')
     runs-on: windows-latest
     steps:
       - name: Check out source
@@ -150,3 +156,17 @@ jobs:
           "@ | Set-Content -LiteralPath "release-notes.md" -Encoding utf8
 
           gh release create v1.1.9 "MapleStoryExpTool-1.1.9-Windows-EXE.zip" --target main --prerelease --title "MapleStoryExpTool v1.1.9 測試版" --notes-file "release-notes.md"
+
+      - name: Remove older releases and version tags
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $keepTag = "v1.1.9"
+          $releaseTags = gh release list --limit 100 --json tagName --jq '.[].tagName'
+          foreach ($tag in $releaseTags) {
+            if ($tag -and $tag -ne $keepTag) {
+              Write-Host "Deleting old release and tag: $tag"
+              gh release delete $tag --cleanup-tag --yes
+            }
+          }
