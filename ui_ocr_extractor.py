@@ -29,7 +29,10 @@ QUICKBAR_BOTTOM_TEMPLATE_ORIGIN = (0, 75)
 # first/last digit edges (especially four-digit HP stacks) and included too
 # much of the hotkey label, which could turn 1510 into 1500 or 773 into 763.
 QUICKBAR_MP_OFFSET = (40, 29, 70, 45)  # Ins slot, quantity only
-QUICKBAR_HP_OFFSET = (40, 65, 73, 78)  # Del slot, quantity only
+# HP's white counter is only eight pixels tall. Keep a slightly larger source
+# region and evaluate several stable text bands inside it; one fixed crop works
+# for some digits but clips strokes from others (notably 7, 0, and 9).
+QUICKBAR_HP_OFFSET = (39, 63, 73, 78)  # Del slot, quantity source region
 AUX_TEMPLATE_THRESHOLD = 0.80
 AUX_DETECT_INTERVAL_FRAMES = 5
 
@@ -74,6 +77,20 @@ class UiOcrExtractor:
         self._mp_potion_last = None
 
         self._model = PPOCRv6TinyTextRecognition(MODEL_PATH, CONFIG_PATH)
+
+    def reset_economy_cache(self) -> None:
+        """Forget cached inventory/quickbar OCR values after a user reset.
+
+        The tracker and OCR cache must start from the same frame.  Otherwise a
+        bad quickbar candidate retained by the extractor can immediately become
+        the new tracker baseline and keep a potion counter stuck.
+        """
+        self._meso_last_array = None
+        self._hp_potion_last_array = None
+        self._mp_potion_last_array = None
+        self._meso_last = None
+        self._hp_potion_last = None
+        self._mp_potion_last = None
 
     def _should_log(self, key: str, interval_sec: float = 10.0) -> bool:
         now = time.monotonic()
@@ -211,6 +228,7 @@ class UiOcrExtractor:
                 value, confidence, text = self._recognize_quickbar_digits(
                     img,
                     last_value,
+                    quickbar_mode,
                 )
             else:
                 text, confidence = self._model.recognize(img)
@@ -243,13 +261,23 @@ class UiOcrExtractor:
         if value is None:
             return None, 0.0
 
+        if quickbar_mode and value != last_value:
+            logger.info(
+                "Quickbar OCR candidate field=%s previous=%s value=%s confidence=%.3f raw_text=%r",
+                value_attr,
+                last_value,
+                value,
+                float(confidence or 0.0),
+                text,
+            )
+
         # Cache only a successful result. Caching before inference could turn a
         # failed read into a stale value with confidence 1 on the next frame.
         setattr(self, array_attr, img.copy())
         setattr(self, value_attr, value)
         return value, confidence
 
-    def _recognize_quickbar_digits(self, image, previous_value):
+    def _recognize_quickbar_digits(self, image, previous_value, quickbar_mode=None):
         """Recognize a tiny outlined counter using several conservative views.
 
         The general OCR model is prone to returning an over-confident partial
@@ -258,35 +286,60 @@ class UiOcrExtractor:
         different digit details.  We then prefer a full-length consensus and,
         once a baseline exists, candidates close to the previous valid count.
         """
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        gray_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        source_views = [image]
+        if quickbar_mode == "black_on_white":
+            # Coordinates are relative to the 34x15 HP source region above.
+            # Scale them to the actual crop so this also works when the game
+            # window is captured at a non-1.0 UI scale.
+            height, width = image.shape[:2]
+
+            def hp_view(x1, y1, x2, y2):
+                left = max(0, min(width, round(x1 * width / 34)))
+                right = max(0, min(width, round(x2 * width / 34)))
+                top = max(0, min(height, round(y1 * height / 15)))
+                bottom = max(0, min(height, round(y2 * height / 15)))
+                if right <= left or bottom <= top:
+                    return None
+                return image[top:bottom, left:right]
+
+            source_views = [
+                hp_view(1, 1, 31, 11),
+                hp_view(1, 1, 33, 13),
+                hp_view(1, 0, 31, 12),
+                hp_view(1, 2, 34, 15),
+            ]
+            source_views = [view for view in source_views if view is not None]
+
         variants = []
 
-        for source in (image, gray_bgr):
-            variants.append(cv2.resize(
-                source,
-                None,
-                fx=2,
-                fy=2,
-                interpolation=cv2.INTER_NEAREST,
-            ))
-            for scale in (3, 4):
-                enlarged = cv2.resize(
+        for crop_view in source_views:
+            gray = cv2.cvtColor(crop_view, cv2.COLOR_BGR2GRAY)
+            gray_bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+            for source in (crop_view, gray_bgr):
+                variants.append(cv2.resize(
                     source,
                     None,
-                    fx=scale,
-                    fy=scale,
-                    interpolation=cv2.INTER_LANCZOS4,
-                )
-                variants.append(cv2.copyMakeBorder(
-                    enlarged,
-                    4,
-                    4,
-                    4,
-                    4,
-                    cv2.BORDER_CONSTANT,
-                    value=(0, 0, 0),
+                    fx=2,
+                    fy=2,
+                    interpolation=cv2.INTER_NEAREST,
                 ))
+                for scale in (3, 4):
+                    enlarged = cv2.resize(
+                        source,
+                        None,
+                        fx=scale,
+                        fy=scale,
+                        interpolation=cv2.INTER_LANCZOS4,
+                    )
+                    variants.append(cv2.copyMakeBorder(
+                        enlarged,
+                        4,
+                        4,
+                        4,
+                        4,
+                        cv2.BORDER_CONSTANT,
+                        value=(0, 0, 0),
+                    ))
 
         candidates = []
         raw_texts = []
@@ -302,41 +355,73 @@ class UiOcrExtractor:
             return None, 0.0, " | ".join(raw_texts)
 
         if previous_value is None:
-            length_counts = {}
-            for _, _, digits, _ in candidates:
-                length_counts[len(digits)] = length_counts.get(len(digits), 0) + 1
+            value_counts = {}
+            for value, _, _, _ in candidates:
+                value_counts[value] = value_counts.get(value, 0) + 1
 
-            supported_lengths = [
-                length for length, count in length_counts.items() if count >= 2
+            supported_values = [
+                value for value, count in value_counts.items() if count >= 2
             ]
-            target_length = max(supported_lengths or length_counts)
-            pool = [item for item in candidates if len(item[2]) == target_length]
+            if supported_values:
+                target_length = max(len(str(value)) for value in supported_values)
+                supported_values = [
+                    value for value in supported_values
+                    if len(str(value)) == target_length
+                ]
+                pool = [item for item in candidates if item[0] in supported_values]
+            else:
+                target_length = max(len(item[2]) for item in candidates)
+                pool = [item for item in candidates if len(item[2]) == target_length]
         else:
-            previous_length = len(str(previous_value))
+            # Compare the numeric distance instead of locking the digit count.
+            # This permits valid boundaries such as 1000 -> 999 and 100 -> 99.
             pool = [
                 item for item in candidates
-                if len(item[2]) == previous_length
-                and abs(item[0] - previous_value) <= 4
+                if abs(item[0] - previous_value) <= 4
             ]
             if not pool:
                 return None, 0.0, " | ".join(raw_texts)
 
-        value_counts = {}
-        for value, _, _, _ in pool:
-            value_counts[value] = value_counts.get(value, 0) + 1
-        best_frequency = max(value_counts.values())
-        most_common = [
-            item for item in pool if value_counts[item[0]] == best_frequency
+        grouped = {}
+        for item in pool:
+            grouped.setdefault(item[0], []).append(item)
+
+        best_frequency = max(len(items) for items in grouped.values())
+        winning_values = [
+            value for value, items in grouped.items()
+            if len(items) == best_frequency
         ]
 
-        if previous_value is not None:
-            nearest_delta = min(abs(item[0] - previous_value) for item in most_common)
-            most_common = [
-                item for item in most_common
-                if abs(item[0] - previous_value) == nearest_delta
-            ]
+        if previous_value is not None and len(winning_values) > 1:
+            # This method is only called when the crop pixels changed.  If the
+            # old and new number receive equal votes, preferring the old value
+            # makes a real one-bottle use invisible forever.  Temporal
+            # confirmation in EconomyTracker still rejects one-frame noise.
+            changed_values = [value for value in winning_values if value != previous_value]
+            if changed_values:
+                winning_values = changed_values
 
-        value, confidence, _, text = max(most_common, key=lambda item: item[1])
+        def value_score(value):
+            items = grouped[value]
+            confidence_sum = sum(item[1] for item in items)
+            confidence_max = max(item[1] for item in items)
+            if previous_value is None:
+                distance_score = 0
+            else:
+                distance_score = -abs(value - previous_value)
+            return confidence_sum, confidence_max, distance_score
+
+        value = max(winning_values, key=value_score)
+        winning_items = grouped[value]
+        _, raw_confidence, _, text = max(winning_items, key=lambda item: item[1])
+
+        # Two independent preprocessing views agreeing is stronger than one
+        # model confidence value.  Promote that consensus above the UI's 0.8
+        # threshold; a lone view must still pass on its own confidence.
+        if len(winning_items) >= 2:
+            confidence = max(raw_confidence, min(0.99, 0.75 + 0.08 * len(winning_items)))
+        else:
+            confidence = raw_confidence
         return value, confidence, text
 
     def _prepare_quickbar_digits(self, image, mode):
