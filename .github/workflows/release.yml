@@ -1,5 +1,5 @@
 name: Build and publish Windows release
-# Release trigger: v1.1.9
+# Release trigger: v1.1.9 authenticated push
 
 on:
   workflow_dispatch:
