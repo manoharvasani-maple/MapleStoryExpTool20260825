@@ -2,12 +2,18 @@ name: Build and publish Windows release
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/release.yml"
 
 permissions:
   contents: write
 
 jobs:
   release:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release v1.1.4]')
     runs-on: windows-latest
     steps:
       - name: Check out source
@@ -47,7 +53,7 @@ jobs:
           }
 
           @"
-          MapleStoryExpTool v1.1.3
+          MapleStoryExpTool v1.1.4
 
           使用方式：
           1. 完整解壓縮此 ZIP。
@@ -61,10 +67,15 @@ jobs:
           - 撿到同種藥水會抵銷藥水消耗，因此藥水消耗也可為負數。
           - 單次藥水數量跳動超過 10 瓶時，會視為 OCR 異常並重新建立基準。
 
+          診斷日誌：
+          - 錯誤紀錄位於 %APPDATA%\ExpTracker\error.log。
+          - 可從設定頁按「開啟錯誤紀錄資料夾」。
+          - 日誌不會保存遊戲截圖，單一檔案最大約 1 MB 並保留 3 份備份。
+
           Windows SmartScreen 可能因程式沒有付費數位簽章而顯示提示。
           "@ | Set-Content -LiteralPath "$app\README.txt" -Encoding utf8
 
-          Compress-Archive -LiteralPath $app -DestinationPath "MapleStoryExpTool-1.1.3-Windows-EXE.zip" -CompressionLevel Optimal
+          Compress-Archive -LiteralPath $app -DestinationPath "MapleStoryExpTool-1.1.4-Windows-EXE.zip" -CompressionLevel Optimal
 
       - name: Publish GitHub release
         shell: pwsh
@@ -74,9 +85,17 @@ jobs:
           @"
           ## Windows 版下載方式
 
-          請從 Assets 下載 `MapleStoryExpTool-1.1.3-Windows-EXE.zip`。完整解壓縮後，雙擊 `MapleStoryExpTool.exe`。
+          請從 Assets 下載 `MapleStoryExpTool-1.1.4-Windows-EXE.zip`。完整解壓縮後，雙擊 `MapleStoryExpTool.exe`。
 
-          ## 1.1.3 修正
+          ## 1.1.4 新增
+
+          - 自動寫入 `%APPDATA%\ExpTracker\error.log`
+          - 記錄畫面擷取例外、遊戲視窗狀態、模板比對分數與 OCR 例外
+          - 設定頁新增「開啟錯誤紀錄資料夾」按鈕
+          - 日誌單檔上限約 1 MB，保留最多 3 份備份
+          - 日誌不保存遊戲截圖
+
+          ## 既有修正
 
           - 楓幣改為相對重置基準的淨變化，避免 OCR 暫時誤讀後恢復造成重複累加
           - 撿到同種藥水時會抵銷藥水消耗，結果允許為負數
@@ -92,5 +111,5 @@ jobs:
           - 程式未購買數位簽章，Windows 可能顯示 SmartScreen 提示
           "@ | Set-Content -LiteralPath "release-notes.md" -Encoding utf8
 
-          gh release create v1.1.3 "MapleStoryExpTool-1.1.3-Windows-EXE.zip" --target main --title "MapleStoryExpTool v1.1.3" --notes-file "release-notes.md"
+          gh release create v1.1.4 "MapleStoryExpTool-1.1.4-Windows-EXE.zip" --target main --title "MapleStoryExpTool v1.1.4" --notes-file "release-notes.md"
 
