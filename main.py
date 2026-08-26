@@ -35,7 +35,7 @@ from economy_tracker import EconomyTracker
 from helper import get_hwnd, get_resource_path
 from ui_ocr_extractor import UiOcrExtractor
 
-APP_VERSION = "1.1.5"
+APP_VERSION = "1.1.6"
 WINDOW_TITLE = "新楓之谷：經典版"
 UPDATE_INTERVAL_MS = 100
 logger = get_logger("main")
@@ -112,6 +112,7 @@ class CaptureWorker:
         self._running = True
         self._capture_control = None
         self._last_status = None
+        self._economy_reset_requested = threading.Event()
 
         self._thread = threading.Thread(
             target=self._run,
@@ -135,6 +136,9 @@ class CaptureWorker:
                 self._capture_control.stop()
             except Exception:
                 logger.exception("Failed to stop the active capture session")
+
+    def request_economy_reset(self):
+        self._economy_reset_requested.set()
 
     def _run(self):
         while self._running:
@@ -174,6 +178,11 @@ class CaptureWorker:
 
                     try:
                         self.extractor.update(frame.frame_buffer)
+
+                        if self._economy_reset_requested.is_set():
+                            self.extractor.reset_economy_cache()
+                            self._economy_reset_requested.clear()
+                            logger.info("Economy OCR cache reset")
 
                         # UI template not (yet) matched in this frame - report a short,
                         # stable status instead of falling through to a stale/garbage read.
@@ -880,6 +889,7 @@ class OverlayWindow(QWidget):
             confirmation_reads=3,
             max_potion_drop=5,
         )
+        self._economy_accept_after = 0.0
         self.refresh_economy_lines()
 
         # Worker initialization comes last so signals cannot race the state above.
@@ -1007,6 +1017,8 @@ class OverlayWindow(QWidget):
         self.exp_history.clear()
         self.last_history_update = 0.0
         self.last_data = None
+        self._economy_accept_after = time.monotonic() + 0.5
+        self.worker.request_economy_reset()
         self.economy_tracker.reset()
 
         mins = int(AVERAGING_WINDOW_SEC / 60)
@@ -1021,6 +1033,8 @@ class OverlayWindow(QWidget):
 
     @Slot(object, object, object)
     def update_economy(self, meso, hp_count, mp_count):
+        if time.monotonic() < self._economy_accept_after:
+            return
         if self.economy_tracker.update(meso, hp_count, mp_count):
             self.refresh_economy_lines()
 
