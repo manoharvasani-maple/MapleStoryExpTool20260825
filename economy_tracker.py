@@ -15,7 +15,7 @@ class EconomySnapshot:
 class EconomyTracker:
     """Tracks confirmed wallet and quick-slot counter changes for one session."""
 
-    def __init__(self, confirmation_reads: int = 2, max_potion_drop: int = 10):
+    def __init__(self, confirmation_reads: int = 2, max_potion_drop: int = 5):
         self.confirmation_reads = max(1, int(confirmation_reads))
         # Keep the public argument/property name for compatibility with 1.1.0,
         # but apply the limit symmetrically to both gains and drops.
@@ -24,6 +24,8 @@ class EconomyTracker:
 
     def reset(self) -> None:
         self.initial_meso = None
+        self.initial_hp_count = None
+        self.initial_mp_count = None
         self.last_meso = None
         self.last_hp_count = None
         self.last_mp_count = None
@@ -74,43 +76,32 @@ class EconomyTracker:
             return False
 
         attr = f"last_{kind}_count"
+        initial_attr = f"initial_{kind}_count"
         previous = getattr(self, attr)
 
         if previous is None:
+            setattr(self, initial_attr, confirmed)
             setattr(self, attr, confirmed)
             return False
 
         change = confirmed - previous
-        if abs(change) > self.max_potion_drop:
+        if abs(change) >= self.max_potion_drop:
             # A two-frame OCR error can still pass the ordinary confirmation
-            # filter.  Rebase without changing the total so the tracker can
-            # recover on the next valid reading instead of applying a huge
-            # negative value or remaining stuck on the old baseline.
-            setattr(self, attr, confirmed)
+            # filter. Do not rebase on it: recovery from a false baseline can
+            # otherwise look like a pickup (for example 1500 -> 1508 = -8).
+            # Press Reset after intentionally replacing a large stack.
             return False
 
-        if confirmed < previous:
-            consumed = previous - confirmed
-            if kind == "hp":
-                self.hp_consumed += consumed
-            else:
-                self.mp_consumed += consumed
-            setattr(self, attr, confirmed)
-            return True
+        if confirmed == previous:
+            return False
 
-        # Treat counter increases as potions obtained during the session.  The
-        # displayed value is intentionally a net consumption estimate: potions
-        # gained while training reduce the accumulated consumption.  A negative
-        # result means that the session gained more potions than it consumed.
-        if confirmed > previous:
-            obtained = confirmed - previous
-            if kind == "hp":
-                self.hp_consumed -= obtained
-            else:
-                self.mp_consumed -= obtained
-            setattr(self, attr, confirmed)
-            return True
-        return False
+        initial = getattr(self, initial_attr)
+        consumed_attr = f"{kind}_consumed"
+        new_consumed = initial - confirmed
+        changed = new_consumed != getattr(self, consumed_attr)
+        setattr(self, attr, confirmed)
+        setattr(self, consumed_attr, new_consumed)
+        return changed
 
     def _confirm(self, key: str, value):
         if value is None:
