@@ -24,12 +24,21 @@ from PySide6.QtWidgets import (
 )
 from windows_capture import WindowsCapture, Frame, InternalCaptureControl
 
+from diagnostics import (
+    configure_diagnostics,
+    get_app_data_dir,
+    get_log_path,
+    get_logger,
+    shutdown_diagnostics,
+)
 from economy_tracker import EconomyTracker
 from helper import get_hwnd, get_resource_path
 from ui_ocr_extractor import UiOcrExtractor
 
+APP_VERSION = "1.1.4"
 WINDOW_TITLE = "新楓之谷：經典版"
 UPDATE_INTERVAL_MS = 100
+logger = get_logger("main")
 
 # DEFAULT CONFIGURATIONS --------------------------------------------------------------------------
 DEFAULT_IDLE_TIMEOUT_MIN = 2.0
@@ -61,10 +70,9 @@ EXP_REQ = [0, 15, 34, 57, 92, 135, 372, 560, 840, 1242, 1716, 2360, 3216, 4200, 
 
 
 def get_settings_path() -> str:
-    base_dir = os.getenv("APPDATA") or os.path.expanduser("~")
-    config_dir = os.path.join(base_dir, "ExpTracker")
-    os.makedirs(config_dir, exist_ok=True)
-    return os.path.join(config_dir, "settings.json")
+    config_dir = get_app_data_dir()
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return str(config_dir / "settings.json")
 
 
 def format_exp(value: float, digits: int) -> str:
@@ -103,8 +111,19 @@ class CaptureWorker:
         self.extractor = UiOcrExtractor()
         self._running = True
         self._capture_control = None
+        self._last_status = None
 
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread = threading.Thread(
+            target=self._run,
+            daemon=True,
+            name="CaptureWorker",
+        )
+
+    def _report_status(self, text: str, level: int = 20):
+        if text != self._last_status:
+            logger.log(level, "Capture status: %s", text)
+            self._last_status = text
+        self.signals.status_changed.emit(text)
 
     def start(self):
         self._thread.start()
@@ -115,18 +134,28 @@ class CaptureWorker:
             try:
                 self._capture_control.stop()
             except Exception:
-                pass
+                logger.exception("Failed to stop the active capture session")
 
     def _run(self):
         while self._running:
             capture = None
+            target_hwnd = None
             try:
                 target_hwnd = get_hwnd(self.window_title)
 
                 if not target_hwnd:
-                    self.signals.status_changed.emit("搜尋遊戲視窗中...")
+                    self._report_status(
+                        f"搜尋遊戲視窗中...（錯誤紀錄：{get_log_path()}）",
+                        level=30,
+                    )
                     threading.Event().wait(1.0)
                     continue
+
+                logger.info(
+                    "Game window found title=%r hwnd=%s",
+                    self.window_title,
+                    target_hwnd,
+                )
 
                 capture = WindowsCapture(
                     cursor_capture=False,
@@ -149,7 +178,7 @@ class CaptureWorker:
                         # UI template not (yet) matched in this frame - report a short,
                         # stable status instead of falling through to a stale/garbage read.
                         if not self.extractor.is_available():
-                            self.signals.status_changed.emit("找不到遊戲介面，偵測中...")
+                            self._report_status("找不到遊戲介面，偵測中...", level=30)
                             return
 
                         meso, conf_meso = self.extractor.get_meso()
@@ -166,11 +195,11 @@ class CaptureWorker:
                         experience, conf_exp = self.extractor.get_player_experience()
 
                         if conf_lv is None or conf_exp is None:
-                            self.signals.status_changed.emit("讀取中...")
+                            self._report_status("讀取中...")
                             return
 
                         if conf_lv < 0.8 or conf_exp < 0.8:
-                            self.signals.status_changed.emit("讀取中...")
+                            self._report_status("讀取中...")
                             return
 
                         lv_idx = int(level)
@@ -179,26 +208,33 @@ class CaptureWorker:
                             percent = (float(experience) * 100 / float(requirement)) if requirement else 0.0
                             self.signals.data_updated.emit(lv_idx, float(experience), percent)
                         else:
-                            self.signals.status_changed.emit("等級讀取異常")
-                    except Exception as err:
+                            self._report_status("等級讀取異常", level=30)
+                    except Exception:
                         # Log the full detail for debugging, but only ever show a short,
                         # bounded message in the UI - a raw exception string can be
                         # arbitrarily long and shouldn't be able to affect the overlay.
-                        print(f"[CaptureWorker] Frame processing error: {err}")
-                        self.signals.status_changed.emit("處理時發生錯誤")
+                        logger.exception("Frame processing failed")
+                        self._report_status("處理時發生錯誤，請查看錯誤紀錄", level=40)
 
                 @capture.event
                 def on_closed():
-                    self.signals.status_changed.emit("遊戲視窗已關閉")
+                    self._report_status("遊戲視窗已關閉", level=30)
 
-                self.signals.status_changed.emit("已連接遊戲視窗")
+                self._report_status("已連接遊戲視窗")
                 capture.start()
 
-            except Exception as e:
+            except Exception:
                 if self._running:
                     # Full detail to console; short, bounded status to the UI.
-                    print(f"[CaptureWorker] Capture error: {e}")
-                    self.signals.status_changed.emit("擷取畫面時發生錯誤，重試中...")
+                    logger.exception(
+                        "Screen capture failed title=%r hwnd=%s",
+                        self.window_title,
+                        target_hwnd,
+                    )
+                    self._report_status(
+                        "擷取畫面時發生錯誤，請查看錯誤紀錄",
+                        level=40,
+                    )
 
             finally:
                 self._capture_control = None
@@ -540,6 +576,9 @@ class SettingsWindow(QDialog):
 
         self.hp_potion_price_label = QLabel("HP 藥水單價：", self)
         self.mp_potion_price_label = QLabel("MP 藥水單價：", self)
+        self.open_log_button = QPushButton("開啟錯誤紀錄資料夾", self)
+        self.open_log_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.open_log_button.clicked.connect(self._open_log_folder)
 
         self.form.addRow(self.player_info_checkbox)
         self.form.addRow(self.ten_min_exp_checkbox)
@@ -550,6 +589,7 @@ class SettingsWindow(QDialog):
         self.form.addRow(self.hp_potion_price_label, self.hp_potion_price_spin)
         self.form.addRow(self.mp_potion_price_label, self.mp_potion_price_spin)
         self.form.addRow(self.ui_scale_label, self.ui_scale_spin)
+        self.form.addRow(self.open_log_button)
 
         # Confirm/Return button using resource/confirm/
         self.return_button = ImageButton("resources/confirm", self)
@@ -613,6 +653,19 @@ class SettingsWindow(QDialog):
 
         self.ui_scale_label.setStyleSheet(f"color: black; font-weight: bold; font-size: {int(12 * scale)}px;")
         self.ui_scale_spin.setStyleSheet(f"color: black; font-weight: bold; font-size: {int(12 * scale)}px;")
+        self.open_log_button.setStyleSheet(f"""
+            QPushButton {{
+                color: black;
+                background-color: rgba(255, 255, 255, 140);
+                border: 1px solid #777777;
+                border-radius: {int(3 * scale)}px;
+                padding: {int(3 * scale)}px {int(6 * scale)}px;
+                font-size: {int(11 * scale)}px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{ background-color: rgba(255, 255, 255, 210); }}
+            QPushButton:pressed {{ background-color: rgba(210, 210, 210, 220); }}
+        """)
 
         self.return_button.set_scale(scale)
         self.adjustSize()
@@ -633,11 +686,23 @@ class SettingsWindow(QDialog):
     def _close_settings(self):
         self.hide()
 
+    def _open_log_folder(self):
+        log_path = get_log_path()
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(log_path.parent))
+            logger.info("Opened diagnostic log folder path=%s", log_path.parent)
+        except OSError:
+            logger.exception("Failed to open diagnostic log folder path=%s", log_path.parent)
+
     def load_settings(self):
         try:
             with open(get_settings_path(), "r", encoding="utf-8") as f:
                 data = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError, OSError, UnicodeDecodeError):
+        except FileNotFoundError:
+            return
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            logger.exception("Failed to load settings path=%s", get_settings_path())
             return
 
         if not isinstance(data, dict):
@@ -686,8 +751,8 @@ class SettingsWindow(QDialog):
         try:
             with open(get_settings_path(), "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-        except OSError as err:
-            print(f"[SettingsWindow] Failed to save settings: {err}")
+        except OSError:
+            logger.exception("Failed to save settings path=%s", get_settings_path())
 
     def closeEvent(self, event):
         self.hide()
@@ -1132,10 +1197,13 @@ class OverlayWindow(QWidget):
         self.worker.stop()
         self.settings_window.close()
         event.accept()
+        logger.info("Application closed by user")
+        shutdown_diagnostics()
         os._exit(0)
 
 
 if __name__ == "__main__":
+    configure_diagnostics(APP_VERSION)
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
