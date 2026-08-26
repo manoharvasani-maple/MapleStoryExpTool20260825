@@ -18,12 +18,17 @@ class EconomySnapshot:
 
 
 class EconomyTracker:
-    """Tracks confirmed wallet and quick-slot counter changes for one session."""
+    """Tracks meso continuously and potions from two confirmed snapshots.
+
+    Potion OCR is intentionally inactive between the start and end snapshots.
+    Intermediate misreads therefore cannot alter the displayed consumption.
+    """
 
     def __init__(self, confirmation_reads: int = 2, max_potion_drop: int = 5):
         self.confirmation_reads = max(1, int(confirmation_reads))
-        # Keep the public argument/property name for compatibility with 1.1.0,
-        # but apply the limit symmetrically to both gains and drops.
+        # Retained for source compatibility with earlier versions. Snapshot
+        # mode does not reject the final count based on its distance from the
+        # start count; a long training session can legitimately use many items.
         self.max_potion_drop = max(1, int(max_potion_drop))
         self.reset()
 
@@ -31,12 +36,15 @@ class EconomyTracker:
         self.initial_meso = None
         self.initial_hp_count = None
         self.initial_mp_count = None
+        self.final_hp_count = None
+        self.final_mp_count = None
         self.last_meso = None
         self.last_hp_count = None
         self.last_mp_count = None
         self.meso_gained = 0
         self.hp_consumed = 0
         self.mp_consumed = 0
+        self.potion_phase = "start"
         self._pending = {}
 
     def update(self, meso=None, hp_count=None, mp_count=None) -> bool:
@@ -57,9 +65,68 @@ class EconomyTracker:
             self.last_meso = confirmed_meso
             self.meso_gained = net_meso_change
 
-        changed |= self._update_potion("hp", hp_count)
-        changed |= self._update_potion("mp", mp_count)
+        changed |= self._capture_potion_snapshot("hp", hp_count)
+        changed |= self._capture_potion_snapshot("mp", mp_count)
         return changed
+
+    @property
+    def has_potion_start(self) -> bool:
+        return self.initial_hp_count is not None and self.initial_mp_count is not None
+
+    @property
+    def has_potion_end(self) -> bool:
+        return self.final_hp_count is not None and self.final_mp_count is not None
+
+    def begin_potion_settlement(self) -> bool:
+        """Arm OCR for a second snapshot after training has ended."""
+        if not self.has_potion_start:
+            return False
+
+        self.final_hp_count = None
+        self.final_mp_count = None
+        self.potion_phase = "end"
+        self._pending.pop("end_hp", None)
+        self._pending.pop("end_mp", None)
+        logger.info(
+            "Potion end snapshot requested start_hp=%s start_mp=%s",
+            self.initial_hp_count,
+            self.initial_mp_count,
+        )
+        return True
+
+    def settle_potions(self, hp_count, mp_count, source: str = "manual") -> bool:
+        """Set the final counts directly, normally from the manual dialog."""
+        if not self.has_potion_start:
+            return False
+
+        try:
+            hp = int(hp_count)
+            mp = int(mp_count)
+        except (TypeError, ValueError):
+            return False
+        if hp < 0 or mp < 0:
+            return False
+
+        self.final_hp_count = hp
+        self.final_mp_count = mp
+        self.last_hp_count = hp
+        self.last_mp_count = mp
+        self.hp_consumed = self.initial_hp_count - hp
+        self.mp_consumed = self.initial_mp_count - mp
+        self.potion_phase = "settled"
+        self._pending.pop("end_hp", None)
+        self._pending.pop("end_mp", None)
+        logger.info(
+            "Potion snapshot settled source=%s start_hp=%s end_hp=%s start_mp=%s end_mp=%s hp_consumed=%s mp_consumed=%s",
+            source,
+            self.initial_hp_count,
+            hp,
+            self.initial_mp_count,
+            mp,
+            self.hp_consumed,
+            self.mp_consumed,
+        )
+        return True
 
     def snapshot(self, hp_price: int = 0, mp_price: int = 0) -> EconomySnapshot:
         hp_cost = self.hp_consumed * max(0, int(hp_price))
@@ -75,54 +142,45 @@ class EconomyTracker:
             net_profit=self.meso_gained - potion_cost,
         )
 
-    def _update_potion(self, kind: str, value) -> bool:
-        confirmed = self._confirm(kind, value)
+    def _capture_potion_snapshot(self, kind: str, value) -> bool:
+        phase = self.potion_phase
+        if phase not in ("start", "end"):
+            return False
+
+        target_attr = (
+            f"initial_{kind}_count" if phase == "start"
+            else f"final_{kind}_count"
+        )
+        if getattr(self, target_attr) is not None:
+            return False
+
+        confirmed = self._confirm(f"{phase}_{kind}", value)
         if confirmed is None:
             return False
 
-        attr = f"last_{kind}_count"
-        initial_attr = f"initial_{kind}_count"
-        previous = getattr(self, attr)
-
-        if previous is None:
-            setattr(self, initial_attr, confirmed)
-            setattr(self, attr, confirmed)
-            logger.info("Potion baseline kind=%s count=%s", kind, confirmed)
-            return False
-
-        change = confirmed - previous
-        if abs(change) >= self.max_potion_drop:
-            # A two-frame OCR error can still pass the ordinary confirmation
-            # filter. Do not rebase on it: recovery from a false baseline can
-            # otherwise look like a pickup (for example 1500 -> 1508 = -8).
-            # Press Reset after intentionally replacing a large stack.
-            logger.warning(
-                "Rejected potion jump kind=%s previous=%s candidate=%s delta=%s limit=%s",
-                kind,
-                previous,
-                confirmed,
-                change,
-                self.max_potion_drop,
-            )
-            return False
-
-        if confirmed == previous:
-            return False
-
-        initial = getattr(self, initial_attr)
-        consumed_attr = f"{kind}_consumed"
-        new_consumed = initial - confirmed
-        changed = new_consumed != getattr(self, consumed_attr)
-        setattr(self, attr, confirmed)
-        setattr(self, consumed_attr, new_consumed)
+        setattr(self, target_attr, confirmed)
+        setattr(self, f"last_{kind}_count", confirmed)
         logger.info(
-            "Accepted potion change kind=%s previous=%s current=%s net_consumed=%s",
+            "Potion snapshot captured phase=%s kind=%s count=%s",
+            phase,
             kind,
-            previous,
             confirmed,
-            new_consumed,
         )
-        return changed
+
+        if phase == "start" and self.has_potion_start:
+            self.potion_phase = "ready"
+            logger.info(
+                "Potion start snapshot ready hp=%s mp=%s",
+                self.initial_hp_count,
+                self.initial_mp_count,
+            )
+        elif phase == "end" and self.has_potion_end:
+            self.settle_potions(
+                self.final_hp_count,
+                self.final_mp_count,
+                source="ocr",
+            )
+        return True
 
     def _confirm(self, key: str, value):
         if value is None:
