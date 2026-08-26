@@ -963,7 +963,7 @@ class OverlayWindow(QWidget):
         current_meso = self.economy_tracker.last_meso
         current_meso_text = f"{current_meso:,}" if current_meso is not None else "尚未讀取"
         self.current_meso_line.set_text(f"目前楓幣：{current_meso_text}")
-        self.meso_line.set_text(f"楓幣收入：{snapshot.meso_gained:,}")
+        self.meso_line.set_text(f"楓幣淨變化：{snapshot.meso_gained:,}")
         self.potion_count_line.set_text(
             f"藥水消耗：HP {snapshot.hp_consumed} / MP {snapshot.mp_consumed}"
         )
@@ -1144,3 +1144,4 @@ if __name__ == "__main__":
     window = OverlayWindow()
     window.show()
     sys.exit(app.exec())
+
