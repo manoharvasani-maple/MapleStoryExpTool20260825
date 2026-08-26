@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QFormLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QPushButton,
     QSizePolicy,
@@ -35,7 +36,7 @@ from economy_tracker import EconomyTracker
 from helper import get_hwnd, get_resource_path
 from ui_ocr_extractor import UiOcrExtractor
 
-APP_VERSION = "1.1.6"
+APP_VERSION = "1.1.7"
 WINDOW_TITLE = "新楓之谷：經典版"
 UPDATE_INTERVAL_MS = 100
 logger = get_logger("main")
@@ -853,10 +854,16 @@ class OverlayWindow(QWidget):
         self.button_layout.setSpacing(4)
 
         self.reset_button = ImageButton("resources/reset/", self)
+        self.settle_potion_button = OverlayButton("偵測結算", self)
+        self.manual_potion_button = OverlayButton("手動結算", self)
 
         self.reset_button.clicked.connect(self.reset_tracker)
+        self.settle_potion_button.clicked.connect(self.settle_potions_automatically)
+        self.manual_potion_button.clicked.connect(self.settle_potions_manually)
 
         self.button_layout.addWidget(self.reset_button)
+        self.button_layout.addWidget(self.settle_potion_button)
+        self.button_layout.addWidget(self.manual_potion_button)
 
         self.main_layout.addLayout(self.button_layout)
         self.frame_layout.addLayout(self.main_layout)
@@ -882,9 +889,8 @@ class OverlayWindow(QWidget):
         self.exp_history = collections.deque()
         self.last_history_update = 0.0
 
-        # Potion counters use a tiny pixel font. Require three consecutive
-        # readings and reject changes of five or more bottles so a clipped OCR
-        # digit cannot turn one use into a jump of 10 or a false pickup of 8.
+        # Potion counters use two stable snapshots: one after reset and one
+        # when the user asks to settle. Intermediate OCR values are ignored.
         self.economy_tracker = EconomyTracker(
             confirmation_reads=3,
             max_potion_drop=5,
@@ -996,6 +1002,8 @@ class OverlayWindow(QWidget):
         self.button_layout.setSpacing(int(4 * scale))
 
         self.reset_button.set_scale(scale)
+        self.settle_potion_button.set_scale(scale)
+        self.manual_potion_button.set_scale(scale)
 
         self.adjustSize()
 
@@ -1031,6 +1039,63 @@ class OverlayWindow(QWidget):
 
         self.recompute_visibility()
 
+    @Slot()
+    def settle_potions_automatically(self):
+        if not self.economy_tracker.begin_potion_settlement():
+            self.potion_count_line.set_text("藥水起始數量尚未讀取")
+            self.recompute_visibility()
+            return
+
+        # Clear the extractor's continuously cached value so the second
+        # snapshot is independent of everything OCR saw during training.
+        self._economy_accept_after = time.monotonic() + 0.5
+        self.worker.request_economy_reset()
+        self.potion_count_line.set_text("藥水結算：重新偵測中...")
+        logger.info("Automatic potion settlement started")
+        self.recompute_visibility()
+
+    @Slot()
+    def settle_potions_manually(self):
+        tracker = self.economy_tracker
+        if not tracker.has_potion_start:
+            self.potion_count_line.set_text("藥水起始數量尚未讀取")
+            self.recompute_visibility()
+            return
+
+        hp_default = tracker.final_hp_count
+        if hp_default is None:
+            hp_default = tracker.initial_hp_count
+        hp_count, accepted = QInputDialog.getInt(
+            self,
+            "手動結算藥水",
+            "練功結束時 HP 藥水數量：",
+            int(hp_default),
+            0,
+            2_000_000_000,
+            1,
+        )
+        if not accepted:
+            return
+
+        mp_default = tracker.final_mp_count
+        if mp_default is None:
+            mp_default = tracker.initial_mp_count
+        mp_count, accepted = QInputDialog.getInt(
+            self,
+            "手動結算藥水",
+            "練功結束時 MP 藥水數量：",
+            int(mp_default),
+            0,
+            2_000_000_000,
+            1,
+        )
+        if not accepted:
+            return
+
+        if tracker.settle_potions(hp_count, mp_count, source="manual"):
+            self.refresh_economy_lines()
+            self.recompute_visibility()
+
     @Slot(object, object, object)
     def update_economy(self, meso, hp_count, mp_count):
         if time.monotonic() < self._economy_accept_after:
@@ -1047,9 +1112,27 @@ class OverlayWindow(QWidget):
         current_meso_text = f"{current_meso:,}" if current_meso is not None else "尚未讀取"
         self.current_meso_line.set_text(f"目前楓幣：{current_meso_text}")
         self.meso_line.set_text(f"楓幣淨變化：{snapshot.meso_gained:,}")
-        self.potion_count_line.set_text(
-            f"藥水消耗：HP {snapshot.hp_consumed} / MP {snapshot.mp_consumed}"
-        )
+        tracker = self.economy_tracker
+        if tracker.potion_phase == "start":
+            hp_text = (
+                f"{tracker.initial_hp_count}" if tracker.initial_hp_count is not None
+                else "讀取中"
+            )
+            mp_text = (
+                f"{tracker.initial_mp_count}" if tracker.initial_mp_count is not None
+                else "讀取中"
+            )
+            self.potion_count_line.set_text(f"藥水起始：HP {hp_text} / MP {mp_text}")
+        elif tracker.potion_phase == "ready":
+            self.potion_count_line.set_text(
+                f"藥水起始：HP {tracker.initial_hp_count} / MP {tracker.initial_mp_count}"
+            )
+        elif tracker.potion_phase == "end":
+            self.potion_count_line.set_text("藥水結算：重新偵測中...")
+        else:
+            self.potion_count_line.set_text(
+                f"藥水消耗：HP {snapshot.hp_consumed} / MP {snapshot.mp_consumed}"
+            )
         self.potion_cost_line.set_text(f"藥水成本：{snapshot.potion_cost:,}")
         self.net_profit_line.set_text(f"扣除藥水淨收益：{snapshot.net_profit:,}")
 
