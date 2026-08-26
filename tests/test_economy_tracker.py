@@ -11,11 +11,22 @@ class EconomyTrackerTests(unittest.TestCase):
         self.tracker.update(**values)
         self.tracker.update(**values)
 
-    def test_tracks_positive_meso_changes_only(self):
+    def test_tracks_net_meso_change_from_reset_baseline(self):
         self.confirm(meso=1000)
         self.confirm(meso=1250)
         self.confirm(meso=1100)
-        self.assertEqual(self.tracker.snapshot().meso_gained, 250)
+        self.assertEqual(self.tracker.snapshot().meso_gained, 100)
+
+    def test_meso_ocr_drop_and_recovery_does_not_inflate_income(self):
+        self.confirm(meso=1_043_338)
+        self.confirm(meso=43_338)
+        self.confirm(meso=1_043_338)
+        self.assertEqual(self.tracker.snapshot().meso_gained, 0)
+
+    def test_meso_net_change_can_be_negative(self):
+        self.confirm(meso=1_000)
+        self.confirm(meso=750)
+        self.assertEqual(self.tracker.snapshot().meso_gained, -250)
 
     def test_tracks_hp_and_mp_decreases(self):
         self.confirm(hp_count=80, mp_count=126)
@@ -25,16 +36,51 @@ class EconomyTrackerTests(unittest.TestCase):
         self.assertEqual(snapshot.mp_consumed, 1)
         self.assertEqual(snapshot.potion_cost, 400)
 
-    def test_restock_does_not_count_as_consumption(self):
+    def test_obtained_potions_reduce_accumulated_consumption(self):
         self.confirm(hp_count=80)
-        self.confirm(hp_count=100)
-        self.assertEqual(self.tracker.snapshot().hp_consumed, 0)
+        self.confirm(hp_count=75)
+        self.confirm(hp_count=77)
+        self.assertEqual(self.tracker.snapshot().hp_consumed, 3)
 
-    def test_rejects_large_ocr_drop(self):
+    def test_obtained_potions_can_make_net_consumption_negative(self):
+        self.confirm(hp_count=80, mp_count=100)
+        self.confirm(hp_count=79, mp_count=98)
+        self.confirm(hp_count=88, mp_count=101)
+        snapshot = self.tracker.snapshot()
+        self.assertEqual(snapshot.hp_consumed, -8)
+        self.assertEqual(snapshot.mp_consumed, -1)
+
+    def test_negative_consumption_counts_as_potion_value_gained(self):
+        self.confirm(meso=1000, hp_count=80, mp_count=100)
+        self.confirm(meso=1200, hp_count=82, mp_count=101)
+        snapshot = self.tracker.snapshot(hp_price=100, mp_price=50)
+        self.assertEqual(snapshot.potion_cost, -250)
+        self.assertEqual(snapshot.net_profit, 450)
+
+    def test_obtained_potions_update_net_cost(self):
+        self.confirm(hp_count=80, mp_count=100)
+        self.confirm(hp_count=75, mp_count=96)
+        self.confirm(hp_count=77, mp_count=97)
+        snapshot = self.tracker.snapshot(hp_price=100, mp_price=200)
+        self.assertEqual(snapshot.hp_consumed, 3)
+        self.assertEqual(snapshot.mp_consumed, 3)
+        self.assertEqual(snapshot.potion_cost, 900)
+
+    def test_large_ocr_drop_rebases_without_counting(self):
         self.confirm(mp_count=126)
         self.confirm(mp_count=26)
         self.assertEqual(self.tracker.snapshot().mp_consumed, 0)
-        self.assertEqual(self.tracker.last_mp_count, 126)
+        self.assertEqual(self.tracker.last_mp_count, 26)
+        self.confirm(mp_count=25)
+        self.assertEqual(self.tracker.snapshot().mp_consumed, 1)
+
+    def test_large_ocr_gain_rebases_without_negative_spike(self):
+        self.confirm(mp_count=2)
+        self.confirm(mp_count=12160)
+        self.assertEqual(self.tracker.snapshot().mp_consumed, 0)
+        self.assertEqual(self.tracker.last_mp_count, 12160)
+        self.confirm(mp_count=12159)
+        self.assertEqual(self.tracker.snapshot().mp_consumed, 1)
 
     def test_net_profit_subtracts_manual_prices(self):
         self.confirm(meso=1000, hp_count=10, mp_count=10)
@@ -45,3 +91,4 @@ class EconomyTrackerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
